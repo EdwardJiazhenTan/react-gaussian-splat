@@ -31,36 +31,28 @@ export class AbortablePromise {
         });
     }
 
-    then(onResolve) {
+    then(onResolve, onReject) {
         return new AbortablePromise((resolve, reject) => {
-            this.promise = this.promise
-            .then((...args) => {
-                const onResolveResult = onResolve(...args);
-                if (onResolveResult instanceof Promise || onResolveResult instanceof AbortablePromise) {
-                    onResolveResult.then((...args2) => {
-                        resolve(...args2);
-                    });
-                } else {
-                    resolve(onResolveResult);
-                }
-            })
-            .catch((error) => {
-                reject(error);
-            });
+            this.promise
+                .then(onResolve)
+                .then(resolve)
+                .catch(reject);
         }, this.abortHandler);
     }
 
     catch(onFail) {
-        return new AbortablePromise((resolve) => {
-            this.promise = this.promise.then((...args) => {
-                resolve(...args);
-            })
-            .catch(onFail);
+        return new AbortablePromise((resolve, reject) => {
+            this.promise
+                .then(resolve)
+                .catch(onFail)
+                .catch(reject);
         }, this.abortHandler);
     }
 
-    abort() {
-        if (this.abortHandler) this.abortHandler();
+    abort(reason) {
+        if (this.abortHandler) {
+            this.abortHandler(reason);
+        }
     }
 }
 
