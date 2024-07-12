@@ -1,6 +1,6 @@
 import { AbortablePromise, AbortedPromiseError } from './AbortablePromise.js';
 
-export const floatToHalf = function() {
+export const floatToHalf = (function() {
 
     const floatView = new Float32Array(1);
     const int32View = new Int32Array(floatView.buffer);
@@ -32,9 +32,9 @@ export const floatToHalf = function() {
         return bits;
     };
 
-}();
+})();
 
-export const uintEncodedFloat = function() {
+export const uintEncodedFloat = (function() {
 
     const floatView = new Float32Array(1);
     const int32View = new Int32Array(floatView.buffer);
@@ -44,7 +44,7 @@ export const uintEncodedFloat = function() {
         return int32View[0];
     };
 
-}();
+})();
 
 export const rgbaToInteger = function(r, g, b, a) {
     return r + (g << 8) + (b << 16) + (a << 24);
@@ -61,9 +61,9 @@ export const fetchWithProgress = function(path, onProgress, saveChunks = true) {
     let aborted = false;
     let rejectFunc = null;
     
-    const abortHandler = (reason) => {
+    const abortHandler = () => {
         if (!aborted) {
-            abortController.abort(reason);
+            abortController.abort();
             rejectFunc(new AbortedPromiseError('Fetch aborted.'));
             aborted = true;
         }
@@ -71,13 +71,17 @@ export const fetchWithProgress = function(path, onProgress, saveChunks = true) {
 
     return new AbortablePromise((resolve, reject) => {
         rejectFunc = reject;
-        fetch(path, { signal })
-        .then(async (data) => {
-            const reader = data.body.getReader();
-            let bytesDownloaded = 0;
-            let _fileSize = data.headers.get('Content-Length');
-            let fileSize = _fileSize ? parseInt(_fileSize) : undefined;
 
+        fetch(path, { signal })
+        .then(async (response) => {
+            if (!response.ok) {
+                reject(new Error(`Fetch error: ${response.statusText}`));
+                return;
+            }
+            
+            const reader = response.body.getReader();
+            let bytesDownloaded = 0;
+            let fileSize = parseInt(response.headers.get('Content-Length')) || undefined;
             const chunks = [];
 
             while (!aborted) {
@@ -88,29 +92,35 @@ export const fetchWithProgress = function(path, onProgress, saveChunks = true) {
                             onProgress(100, '100%', chunk, fileSize);
                         }
                         if (saveChunks) {
-                            const buffer = new Blob(chunks).arrayBuffer();
+                            const buffer = await new Blob(chunks).arrayBuffer();
                             resolve(buffer);
                         } else {
                             resolve();
                         }
                         break;
                     }
+                    
                     bytesDownloaded += chunk.length;
                     let percent;
                     let percentLabel;
                     if (fileSize !== undefined) {
-                        percent = bytesDownloaded / fileSize * 100;
+                        percent = (bytesDownloaded / fileSize) * 100;
                         percentLabel = `${percent.toFixed(2)}%`;
                     }
                     if (saveChunks) chunks.push(chunk);
                     if (onProgress) {
-                        const cancelSaveChucnks = onProgress(percent, percentLabel, chunk, fileSize);
-                        if (cancelSaveChucnks) saveChunks = false;
+                        const cancelSaveChunks = onProgress(percent, percentLabel, chunk, fileSize);
+                        if (cancelSaveChunks) saveChunks = false;
                     }
                 } catch (error) {
                     reject(error);
                     break;
                 }
+            }
+        })
+        .catch(error => {
+            if (!aborted) {
+                reject(error);
             }
         });
     }, abortHandler);
@@ -148,7 +158,6 @@ export const delayedExecute = (func, fast) => {
         }, fast ? 1 : 50);
     });
 };
-
 
 export const getSphericalHarmonicsComponentCountForDegree = (sphericalHarmonicsDegree = 0) => {
     switch (sphericalHarmonicsDegree) {

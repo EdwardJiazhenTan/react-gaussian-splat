@@ -600,53 +600,60 @@ export class Viewer {
      * }
      * @return {AbortablePromise}
      */
+
     addSplatScene(path, options = {}) {
-
-        if (this.isLoadingOrUnloading()) {
-            throw new Error('Cannot add splat scene while another load or unload is already in progress.');
-        }
-
-        if (this.isDisposingOrDisposed()) {
-            throw new Error('Cannot add splat scene after dispose() is called.');
-        }
-
-        if (options.progressiveLoad && this.splatMesh.scenes && this.splatMesh.scenes.length > 0) {
-            console.log('addSplatScene(): "progressiveLoad" option ignore because there are multiple splat scenes');
-            options.progressiveLoad = false;
-        }
-
-        const format = (options.format !== undefined && options.format !== null) ? options.format : sceneFormatFromPath(path);
-        const progressiveLoad = Viewer.isProgressivelyLoadable(format) && options.progressiveLoad;
-        const showLoadingUI = (options.showLoadingUI !== undefined && options.showLoadingUI !== null) ? options.showLoadingUI : true;
-
-        const hideLoadingUI = () => {
-            console.log('hideLoadingUI');
-        };
-
-        const onProgress = (percentComplete, percentCompleteLabel, loaderStatus) => {
-            if (options.onProgress) options.onProgress(percentComplete, percentCompleteLabel, loaderStatus);
-        };
-
-        console.log('addSplatScene(): progressiveLoad = ' + progressiveLoad);
-        const buildSection = (splatBuffer, firstBuild, finalBuild) => {
-            if (!progressiveLoad && options.onProgress) options.onProgress(0, '0%', LoaderStatus.Processing);
-            const addSplatBufferOptions = {
-                'rotation': options.rotation || options.orientation,
-                'position': options.position,
-                'scale': options.scale,
-                'splatAlphaRemovalThreshold': options.splatAlphaRemovalThreshold,
-            };
-            return this.addSplatBuffers([splatBuffer], [addSplatBufferOptions],
-                                         finalBuild, firstBuild && showLoadingUI, showLoadingUI,
-                                         progressiveLoad, progressiveLoad).then(() => {
-                if (!progressiveLoad && options.onProgress) options.onProgress(100, '100%', LoaderStatus.Processing);
-            });
-        };
-
-        const loadFunc = progressiveLoad ? this.downloadAndBuildSingleSplatSceneProgressiveLoad.bind(this) :
-                                           this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
-        return loadFunc(path, format, options.splatAlphaRemovalThreshold, buildSection.bind(this), onProgress, hideLoadingUI.bind(this));
+    if (this.isLoadingOrUnloading()) {
+        throw new Error('Cannot add splat scene while another load or unload is already in progress.');
     }
+
+    if (this.isDisposingOrDisposed()) {
+        throw new Error('Cannot add splat scene after dispose() is called.');
+    }
+
+    if (options.progressiveLoad && this.splatMesh.scenes && this.splatMesh.scenes.length > 0) {
+        console.log('addSplatScene(): "progressiveLoad" option ignore because there are multiple splat scenes');
+        options.progressiveLoad = false;
+    }
+
+    const format = (options.format !== undefined && options.format !== null) ? options.format : sceneFormatFromPath(path);
+    const progressiveLoad = Viewer.isProgressivelyLoadable(format) && options.progressiveLoad;
+    const showLoadingUI = (options.showLoadingUI !== undefined && options.showLoadingUI !== null) ? options.showLoadingUI : true;
+
+    const hideLoadingUI = () => {
+        console.log('hideLoadingUI');
+    };
+
+    const onProgress = (percentComplete, percentCompleteLabel, loaderStatus) => {
+        if (options.onProgress) options.onProgress(percentComplete, percentCompleteLabel, loaderStatus);
+    };
+
+    console.log('addSplatScene(): progressiveLoad = ' + progressiveLoad);
+
+    const buildSection = (splatBuffer, firstBuild, finalBuild) => {
+        if (!progressiveLoad && options.onProgress) options.onProgress(0, '0%', LoaderStatus.Processing);
+        const addSplatBufferOptions = {
+            'rotation': options.rotation || options.orientation,
+            'position': options.position,
+            'scale': options.scale,
+            'splatAlphaRemovalThreshold': options.splatAlphaRemovalThreshold,
+        };
+        return this.addSplatBuffers([splatBuffer], [addSplatBufferOptions],
+                                    finalBuild, firstBuild && showLoadingUI, showLoadingUI,
+                                    progressiveLoad, progressiveLoad).then(() => {
+            if (!progressiveLoad && options.onProgress) options.onProgress(100, '100%', LoaderStatus.Processing);
+        });
+    };
+
+    const loadFunc = progressiveLoad ? this.downloadAndBuildSingleSplatSceneProgressiveLoad.bind(this) :
+                                       this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
+
+    return loadFunc(path, format, options.splatAlphaRemovalThreshold, buildSection.bind(this), onProgress, hideLoadingUI.bind(this))
+        .catch(error => {
+            console.error(`Error in loadFunc for path ${path}:`, error);
+            throw error; // Ensure the error is thrown to be caught by the calling code
+        });
+}
+
 
     /**
      * Download a single splat scene, convert to splat buffer and then rebuild the viewer's splat mesh
@@ -1169,25 +1176,35 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         return this.splatSceneRemovalPromise;
     }
 
-    /**
-     * Dispose of all resources held directly and indirectly by this viewer.
-     */
     async dispose() {
         this.disposing = true;
         let waitPromises = [];
         let promisesToAbort = [];
+    
         for (let promiseKey in this.splatSceneDownloadPromises) {
             if (this.splatSceneDownloadPromises.hasOwnProperty(promiseKey)) {
                 const downloadPromiseToAbort = this.splatSceneDownloadPromises[promiseKey];
                 if (!downloadPromiseToAbort.isResolved) { // Assuming you have a way to track if the promise is resolved
                     promisesToAbort.push(downloadPromiseToAbort);
-                    waitPromises.push(downloadPromiseToAbort.promise);
+                    waitPromises.push(downloadPromiseToAbort.promise.catch(err => {
+                        // Handle the error here
+                        if (err.message !== 'Scene disposed') {
+                            console.error('Unhandled promise rejection:', err);
+                        }
+                    }));
                 }
             }
         }
+    
         if (this.sortPromise) {
-            waitPromises.push(this.sortPromise);
+            waitPromises.push(this.sortPromise.catch(err => {
+                // Handle the error here
+                if (err.message !== 'Scene disposed') {
+                    console.error('Unhandled sort promise rejection:', err);
+                }
+            }));
         }
+    
         const disposePromise = Promise.all(waitPromises).finally(() => {
             if (this.controls) {
                 this.controls.dispose();
@@ -1207,7 +1224,7 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
             }
             this.disposeSortWorker();
             this.removeEventHandlers();
-
+    
             this.camera = null;
             this.threeScene = null;
             this.splatRenderReady = false;
@@ -1219,11 +1236,11 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                 }
                 this.renderer = null;
             }
-
+    
             if (!this.usingExternalRenderer) {
                 document.body.removeChild(this.rootElement);
             }
-
+    
             this.sortWorkerSortedIndexes = null;
             this.sortWorkerIndexesToSort = null;
             this.sortWorkerPrecomputedDistances = null;
@@ -1231,11 +1248,14 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
             this.disposed = true;
             this.disposing = false;
         });
+    
         promisesToAbort.forEach((toAbort) => {
             toAbort.abort('Scene disposed');
         });
+    
         return disposePromise;
     }
+    
 
     selfDrivenUpdate() {
         if (this.selfDrivenMode) {

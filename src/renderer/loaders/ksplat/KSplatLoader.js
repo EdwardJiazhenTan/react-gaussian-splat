@@ -8,6 +8,7 @@ export class KSplatLoader {
    static checkVersion(buffer) {
         const minVersionMajor = SplatBuffer.CurrentMajorVersion;
         const minVersionMinor = SplatBuffer.CurrentMinorVersion;
+        console.log('buffer', buffer);
         const header = SplatBuffer.parseHeader(buffer);
         if ((header.versionMajor === minVersionMajor &&
             header.versionMinor >= minVersionMinor )||

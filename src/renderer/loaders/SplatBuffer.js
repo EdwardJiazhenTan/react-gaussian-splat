@@ -662,6 +662,7 @@ export class SplatBuffer {
     };
 
     static parseHeader(buffer) {
+        console.log('parseHeader', buffer.byteLength);
         const headerArrayUint8 = new Uint8Array(buffer, 0, SplatBuffer.HeaderSizeBytes);
         const headerArrayUint16 = new Uint16Array(buffer, 0, SplatBuffer.HeaderSizeBytes / 2);
         const headerArrayUint32 = new Uint32Array(buffer, 0, SplatBuffer.HeaderSizeBytes / 4);

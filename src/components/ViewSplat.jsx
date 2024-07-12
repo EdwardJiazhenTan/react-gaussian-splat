@@ -22,6 +22,8 @@ const ViewSplat = () => {
       scale: [1.5, 1.5, 1.5]
     }).then(() => {
       viewer.start();
+    }).catch((error) => {
+      console.error('Error loading splat scene:', error);
     });
 
     return () => {
