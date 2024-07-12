@@ -2,9 +2,11 @@
 
 This project uses Three.js for 3D rendering.
 
+``` shell
 npm install --save three
+```
 
 
 ## Known Issue
 
-TODO: there are errors in abort() 
+Function parseheader() in src/renderer/loaders/splatbuffer.js throws error
