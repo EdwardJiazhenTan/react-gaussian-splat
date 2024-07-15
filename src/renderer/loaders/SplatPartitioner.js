@@ -96,7 +96,7 @@ for (let i = 0; i < partitionCount; i++) {
 
   currentStartSplat += partitionSize;
 }
-
+return new SplatPartitioner(partitionCount, sectionFilters, groupingParameters, undefined);
         };
         return new SplatPartitioner(undefined, undefined, undefined, partitionGenerator);
     }

@@ -14,7 +14,7 @@ const ViewSplat = () => {
       container: mount // Ensure the viewer is attached to the mountRef element
     });
 
-    viewer.addSplatScene('../assets/lego.ply', {
+    viewer.addSplatScene('/lego.ply', {
       splatAlphaRemovalThreshold: 5,
       showLoadingUI: true,
       position: [0, 1, 0],
