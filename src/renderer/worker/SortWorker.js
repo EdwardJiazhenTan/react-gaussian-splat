@@ -84,6 +84,7 @@ function sortWorker(self) {
 
     self.onmessage = (e) => {
         if (e.data.centers) {
+          console.log(1)
             centers = e.data.centers;
             sceneIndexes = e.data.sceneIndexes;
             if (integerBasedSort) {
@@ -200,54 +201,74 @@ function sortWorker(self) {
     };
 }
 
-export function createSortWorker(splatCount, useSharedMemory, enableSIMDInSort, integerBasedSort, dynamicMode) {
-    const worker = new Worker(
-        URL.createObjectURL(
-            new Blob(['(', sortWorker.toString(), ')(self)'], {
-                type: 'application/javascript',
-            }),
-        ),
-    );
+async function createSortWorker(splatCount, useSharedMemory, enableSIMDInSort, integerBasedSort, dynamicMode) {
+  const worker = new Worker(
+    URL.createObjectURL(
+      new Blob(['(', sortWorker.toString(), ')(self)'], {
+        type: 'application/javascript',
+      }),
+    ),
+  );
 
-    let sourceWasm = SorterWasm;
+  let sourceWasm = SorterWasm;
 
-    // iOS makes choosing the right WebAssembly configuration tricky :(
-    let iOSSemVer = isIOS() ? getIOSSemever() : null;
-    if (!enableSIMDInSort && !useSharedMemory) {
-        sourceWasm = SorterWasmNoSIMD;
-        if (iOSSemVer && iOSSemVer.major < 16) {
-            sourceWasm = SorterWasmNoSIMDNonShared;
-        }
-    } else if (!enableSIMDInSort) {
-        sourceWasm = SorterWasmNoSIMD;
-    } else if (!useSharedMemory) {
-        if (iOSSemVer && iOSSemVer.major < 16) {
-            sourceWasm = SorterWasmNonShared;
-        }
+  // iOS makes choosing the right WebAssembly configuration tricky :(
+  let iOSSemVer = isIOS() ? getIOSSemever() : null;
+  if (!enableSIMDInSort && !useSharedMemory) {
+    sourceWasm = SorterWasmNoSIMD;
+    if (iOSSemVer && iOSSemVer.major < 16) {
+      sourceWasm = SorterWasmNoSIMDNonShared;
     }
-
-    const sorterWasmBinaryString = atob(sourceWasm);
-    const sorterWasmBytes = new Uint8Array(sorterWasmBinaryString.length);
-    for (let i = 0; i < sorterWasmBinaryString.length; i++) {
-        sorterWasmBytes[i] = sorterWasmBinaryString.charCodeAt(i);
+  } else if (!enableSIMDInSort) {
+    sourceWasm = SorterWasmNoSIMD;
+  } else if (!useSharedMemory) {
+    if (iOSSemVer && iOSSemVer.major < 16) {
+      sourceWasm = SorterWasmNonShared;
     }
+  }
 
-    worker.postMessage({
-        'init': {
-            'sorterWasmBytes': sorterWasmBytes.buffer,
-            'splatCount': splatCount,
-            'useSharedMemory': useSharedMemory,
-            'integerBasedSort': integerBasedSort,
-            'dynamicMode': dynamicMode,
-            // Super hacky
-            'Constants': {
-                'BytesPerFloat': Constants.BytesPerFloat,
-                'BytesPerInt': Constants.BytesPerInt,
-                'DepthMapRange': Constants.DepthMapRange,
-                'MemoryPageSize': Constants.MemoryPageSize,
-                'MaxScenes': Constants.MaxScenes
-            }
-        }
-    });
-    return worker;
+  // Fetch and convert the WASM file to Base64
+  const base64Wasm = await fetchWasmAsBase64(sourceWasm);
+  const sorterWasmBinaryString = atob(base64Wasm);
+  const sorterWasmBytes = new Uint8Array(sorterWasmBinaryString.length);
+  for (let i = 0; i < sorterWasmBinaryString.length; i++) {
+    sorterWasmBytes[i] = sorterWasmBinaryString.charCodeAt(i);
+  }
+  worker.postMessage({
+    'init': {
+      'sorterWasmBytes': sorterWasmBytes.buffer,
+      'splatCount': splatCount,
+      'useSharedMemory': useSharedMemory,
+      'integerBasedSort': integerBasedSort,
+      'dynamicMode': dynamicMode,
+      // Super hacky
+      'Constants': {
+        'BytesPerFloat': Constants.BytesPerFloat,
+        'BytesPerInt': Constants.BytesPerInt,
+        'DepthMapRange': Constants.DepthMapRange,
+        'MemoryPageSize': Constants.MemoryPageSize,
+        'MaxScenes': Constants.MaxScenes
+      }
+    }
+  });
+  return worker;
+}
+
+export { createSortWorker };
+
+// Utility function to fetch and convert WASM file to Base64
+async function fetchWasmAsBase64(url) {
+  const response = await fetch(url);
+  const arrayBuffer = await response.arrayBuffer();
+  return arrayBufferToBase64(arrayBuffer);
+}
+
+function arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary);
 }
