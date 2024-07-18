@@ -1,5 +1,4 @@
 import ViewSplat from './components/ViewSplat';
-import './App.css';
 
 function App() {
   return (
