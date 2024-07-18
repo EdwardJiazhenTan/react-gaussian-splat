@@ -82,8 +82,8 @@ export class Viewer {
         // https://web.dev/articles/cross-origin-isolation-guide
         // If enabled, it requires specific CORS headers to be present in the response from the server that is sent when
         // loading the application. More information is available in the README.
-        if (options.sharedMemoryForWorkers === undefined || options.sharedMemoryForWorkers === null) options.sharedMemoryForWorkers = true;
-        this.sharedMemoryForWorkers = options.sharedMemoryForWorkers;
+        //if (options.sharedMemoryForWorkers === undefined || options.sharedMemoryForWorkers === null) options.sharedMemoryForWorkers = true;
+        this.sharedMemoryForWorkers = false;
 
         // When true, will perform additional steps during rendering to address artifacts caused by the rendering of gaussians at a
         // substantially different resolution than that at which they were rendered during training. This will only work correctly
@@ -610,13 +610,9 @@ export class Viewer {
         throw new Error('Cannot add splat scene after dispose() is called.');
     }
 
-    if (options.progressiveLoad && this.splatMesh.scenes && this.splatMesh.scenes.length > 0) {
-        console.log('addSplatScene(): "progressiveLoad" option ignore because there are multiple splat scenes');
-        options.progressiveLoad = false;
-    }
 
     const format = (options.format !== undefined && options.format !== null) ? options.format : sceneFormatFromPath(path);
-    const progressiveLoad = Viewer.isProgressivelyLoadable(format) && options.progressiveLoad;
+    const progressiveLoad = false; // set progressiveload to false
     const showLoadingUI = (options.showLoadingUI !== undefined && options.showLoadingUI !== null) ? options.showLoadingUI : true;
 
     const hideLoadingUI = () => {
@@ -639,14 +635,15 @@ export class Viewer {
         };
         return this.addSplatBuffers([splatBuffer], [addSplatBufferOptions],
                                     finalBuild, firstBuild && showLoadingUI, showLoadingUI,
-                                    progressiveLoad, progressiveLoad).then(() => {
-            if (!progressiveLoad && options.onProgress) options.onProgress(100, '100%', LoaderStatus.Processing);
-        });
+                                    progressiveLoad, progressiveLoad);
     };
 
+    /*
     const loadFunc = progressiveLoad ? this.downloadAndBuildSingleSplatSceneProgressiveLoad.bind(this) :
                                        this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
-
+                                       */
+    
+    const loadFunc = this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
     return loadFunc(path, format, options.splatAlphaRemovalThreshold, buildSection.bind(this), onProgress, hideLoadingUI.bind(this))
         .catch(error => {
             console.error(`Error in loadFunc for path ${path}:`, error);
@@ -670,7 +667,6 @@ export class Viewer {
     downloadAndBuildSingleSplatSceneStandardLoad(path, format, splatAlphaRemovalThreshold, buildFunc, onProgress, onException) {
 
         const downloadAndBuildPromise = nativePromiseWithExtractedComponents();
-
         const downloadPromise = this.downloadSplatSceneToSplatBuffer(path, splatAlphaRemovalThreshold, onProgress, false, undefined, format)
         .then((splatBuffer) => {
             this.removeSplatSceneDownloadPromise(downloadPromise);
@@ -897,22 +893,29 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
      * This function will terminate the existing sort worker (if there is one).
      */
     addSplatBuffers = function() {
-
-        return function(splatBuffers, splatBufferOptions = [], finalBuild = true, showLoadingUI = true,
+        return function(splatBuffers, splatBufferOptions = [], finalBuild = true, showLoadingUI = false,
                         showLoadingUIForSplatTreeBuild = true, replaceExisting = false,
                         enableRenderBeforeFirstSort = false, preserveVisibleRegion = true) {
-
-            if (this.isDisposingOrDisposed()) return Promise.resolve();
-
+    
+    
+            if (this.isDisposingOrDisposed()) {
+                console.log('Object is disposing or disposed. Exiting addSplatBuffers.');
+                return Promise.resolve();
+            }
+    
             this.splatRenderReady = false;
             let splatProcessingTaskId = null;
-
+    
             const finish = (buildResults, resolver) => {
-                if (this.isDisposingOrDisposed()) return;
-
-                // If we aren't calculating the splat distances from the center on the GPU, the sorting worker needs splat centers and
-                // transform indexes so that it can calculate those distance values.
+                console.log('Finish function called with buildResults:', buildResults);
+    
+                if (this.isDisposingOrDisposed()) {
+                    console.log('Object is disposing or disposed. Exiting finish function.');
+                    return;
+                }
+    
                 if (!this.gpuAcceleratedSort && this.sortWorker) {
+                    console.log('Posting message to sortWorker with centers and sceneIndexes.');
                     this.sortWorker.postMessage({
                         'centers': buildResults.centers.buffer,
                         'sceneIndexes': buildResults.sceneIndexes.buffer,
@@ -923,46 +926,65 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                         }
                     });
                 }
-
+    
                 this.updateSplatSort(true);
-
+    
                 if (enableRenderBeforeFirstSort) {
                     this.splatRenderReady = true;
+                    console.log('Render before first sort enabled, setting splatRenderReady to true.');
                 } else {
                     this.runAfterNextSort.push(() => {
                         this.splatRenderReady = true;
+                        console.log('Render after next sort, setting splatRenderReady to true.');
                     });
                 }
-
+    
                 this.runAfterNextSort.push(() => {
                     if (splatProcessingTaskId !== null) {
                         splatProcessingTaskId = null;
+                        console.log('Resetting splatProcessingTaskId.');
                     }
                     resolver();
                 });
             };
-
+    
             return new Promise((resolve) => {
+                console.log('Creating new promise for addSplatBuffers.');
                 delayedExecute(() => {
                     if (this.isDisposingOrDisposed()) {
+                        console.log('Object is disposing or disposed. Resolving promise.');
                         resolve();
                     } else {
+                        console.log('Calling addSplatBuffersToMesh with parameters:', {
+                            splatBuffers,
+                            splatBufferOptions,
+                            finalBuild,
+                            showLoadingUIForSplatTreeBuild,
+                            replaceExisting,
+                            preserveVisibleRegion
+                        });
                         const buildResults = this.addSplatBuffersToMesh(splatBuffers, splatBufferOptions, finalBuild,
                                                                         showLoadingUIForSplatTreeBuild, replaceExisting,
                                                                         preserveVisibleRegion);
+                        console.log('Received buildResults from addSplatBuffersToMesh:', buildResults);
                         const maxSplatCount = this.splatMesh.getMaxSplatCount();
-                        if (this.sortWorker && this.sortWorker.maxSplatCount !== maxSplatCount) this.disposeSortWorker();
+                        console.log('Max splat count:', maxSplatCount);
+                        if (this.sortWorker && this.sortWorker.maxSplatCount !== maxSplatCount) {
+                            console.log('Disposing sortWorker due to maxSplatCount mismatch.');
+                            this.disposeSortWorker();
+                        }
                         const sortWorkerSetupPromise = (!this.sortWorker && maxSplatCount > 0) ?
                                                          this.setupSortWorker(this.splatMesh) : Promise.resolve();
                         sortWorkerSetupPromise.then(() => {
+                            console.log('sortWorker setup complete. Calling finish.');
                             finish(buildResults, resolve);
                         });
                     }
                 }, true);
             });
         };
-
     }();
+    
 
     /**
      * Add one or more instances of SplatBuffer to the SplatMesh instance managed by the viewer. By default, this function is additive;
@@ -1030,8 +1052,11 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
             const maxSplatCount = splatMesh.getMaxSplatCount();
             this.sortWorker = createSortWorker(maxSplatCount, this.sharedMemoryForWorkers, this.enableSIMDInSort,
                                                this.integerBasedSort, this.splatMesh.dynamicMode);
+                                               
             this.sortWorker.onmessage = (e) => {
+                console.log('Sort worker message received:', e.data);
                 if (e.data.sortDone) {
+                    console.log(1);
                     this.sortRunning = false;
                     if (this.sharedMemoryForWorkers) {
                         this.splatMesh.updateRenderIndexes(this.sortWorkerSortedIndexes, e.data.splatRenderCount);
@@ -1050,8 +1075,10 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                         this.runAfterNextSort.length = 0;
                     }
                 } else if (e.data.sortCanceled) {
+                    console.log(2);
                     this.sortRunning = false;
                 } else if (e.data.sortSetupPhase1Complete) {
+                    console.log(3);
                     if (this.logLevel >= LogLevel.Info) console.log('Sorting web worker WASM setup complete.');
                     if (this.sharedMemoryForWorkers) {
                         this.sortWorkerSortedIndexes = new Uint32Array(e.data.sortedIndexesBuffer,
@@ -1064,13 +1091,14 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                          this.sortWorkerTransforms = new Float32Array(e.data.transformsBuffer,
                                                                       e.data.transformsOffset, Constants.MaxScenes * 16);
                     } else {
+                        console.log(4);
                         this.sortWorkerIndexesToSort = new Uint32Array(maxSplatCount);
                         this.sortWorkerPrecomputedDistances = new DistancesArrayType(maxSplatCount);
                         this.sortWorkerTransforms = new Float32Array(Constants.MaxScenes * 16);
                     }
+
                     for (let i = 0; i < splatCount; i++) this.sortWorkerIndexesToSort[i] = i;
                     this.sortWorker.maxSplatCount = maxSplatCount;
-
                     if (this.logLevel >= LogLevel.Info) {
                         console.log('Sorting web worker ready.');
                         const splatDataTextures = this.splatMesh.getSplatDataTextures();
@@ -1079,7 +1107,6 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                         console.log('Covariances texture size: ' + covariancesTextureSize.x + ' x ' + covariancesTextureSize.y);
                         console.log('Centers/colors texture size: ' + centersColorsTextureSize.x + ' x ' + centersColorsTextureSize.y);
                     }
-
                     resolve();
                 }
             };
