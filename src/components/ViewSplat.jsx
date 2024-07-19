@@ -25,11 +25,6 @@ const ViewSplat = () => {
     }).catch((error) => {
       console.error('Error loading splat scene:', error);
     });
-
-    return () => {
-      // Clean up if necessary
-      viewer.dispose();
-    };
   }, []);
 
   return <div ref={mountRef} style={{ width: '100%', height: '100vh' }} />;

@@ -9,3 +9,4 @@ npm install --save three
 ## note
 
 proggresiveload is set to false in viewer.js
+line 87
