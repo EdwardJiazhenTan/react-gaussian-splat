@@ -24,7 +24,6 @@ import { RenderMode } from './RenderMode.js';
 import { LogLevel } from './LogLevel.js';
 import { SceneRevealMode } from './SceneRevealMode.js';
 import { SplatRenderMode } from './SplatRenderMode.js';
-import { max } from 'three/examples/jsm/nodes/Nodes.js';
 
 const THREE_CAMERA_FOV = 50;
 const MINIMUM_DISTANCE_TO_NEW_FOCAL_POINT = .75;
@@ -1251,12 +1250,6 @@ export class Viewer {
                     }
                     for (let i = 0; i < splatCount; i++) this.sortWorkerIndexesToSort[i] = i;
                     this.sortWorker.maxSplatCount = maxSplatCount;
-
-                    if (this.logLevel >= LogLevel.Info) {
-                        const splatDataTextures = this.splatMesh.getSplatDataTextures();
-                        const covariancesTextureSize = splatDataTextures.covariances.size;
-                        const centersColorsTextureSize = splatDataTextures.centerColors.size;
-                    }
 
                     resolve();
                 }
