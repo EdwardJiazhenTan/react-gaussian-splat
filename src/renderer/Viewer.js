@@ -4,6 +4,9 @@ import { PlyLoader } from './loaders/ply/PlyLoader.js';
 import { SplatLoader } from './loaders/splat/SplatLoader.js';
 import { KSplatLoader } from './loaders/ksplat/KSplatLoader.js';
 import { sceneFormatFromPath } from './loaders/Utils.js';
+import { LoadingSpinner } from './ui/LoadingSpinner.js';
+import { LoadingProgressBar } from './ui/LoadingProgressBar.js';
+import { InfoPanel } from './ui/InfoPanel.js';
 import { SceneHelper } from './SceneHelper.js';
 import { Raycaster } from './raycaster/Raycaster.js';
 import { SplatMesh } from './splatmesh/SplatMesh.js';
@@ -12,15 +15,23 @@ import { Constants } from './Constants.js';
 import { getCurrentTime, isIOS, getIOSSemever } from './Util.js';
 import { AbortablePromise, AbortedPromiseError } from './AbortablePromise.js';
 import { SceneFormat } from './loaders/SceneFormat.js';
+import { WebXRMode } from './webxr/WebXRMode.js';
+import { VRButton } from './webxr/VRButton.js';
+import { ARButton } from './webxr/ARButton.js';
 import { delayedExecute, nativePromiseWithExtractedComponents, abortablePromiseWithExtractedComponents } from './Util.js';
 import { LoaderStatus } from './loaders/LoaderStatus.js';
 import { RenderMode } from './RenderMode.js';
 import { LogLevel } from './LogLevel.js';
+import { SceneRevealMode } from './SceneRevealMode.js';
+import { SplatRenderMode } from './SplatRenderMode.js';
+import { max } from 'three/examples/jsm/nodes/Nodes.js';
 
 const THREE_CAMERA_FOV = 50;
 const MINIMUM_DISTANCE_TO_NEW_FOCAL_POINT = .75;
+const MIN_SPLAT_COUNT_TO_SHOW_SPLAT_TREE_LOADING_SPINNER = 1500000;
 const FOCUS_MARKER_FADE_IN_SPEED = 10.0;
 const FOCUS_MARKER_FADE_OUT_SPEED = 2.5;
+const CONSECUTIVE_RENDERED_FRAMES_FOR_FPS_CALCULATION = 60;
 
 /**
  * Viewer: Manages the rendering of splat scenes. Manages an instance of SplatMesh as well as a web worker
@@ -46,6 +57,11 @@ export class Viewer {
         // 'dropInMode' is a flag that is used internally to support the usage of the viewer as a Three.js scene object
         this.dropInMode = options.dropInMode || false;
 
+        // If 'selfDrivenMode' is true, the viewer manages its own update/animation loop via requestAnimationFrame()
+        if (options.selfDrivenMode === undefined || options.selfDrivenMode === null) options.selfDrivenMode = true;
+        this.selfDrivenMode = options.selfDrivenMode && !this.dropInMode;
+        this.selfDrivenUpdateFunc = this.selfDrivenUpdate.bind(this);
+
         // If 'useBuiltInControls' is true, the viewer will create its own instance of OrbitControls and attach to the camera
         if (options.useBuiltInControls === undefined) options.useBuiltInControls = true;
         this.useBuiltInControls = options.useBuiltInControls;
@@ -57,6 +73,9 @@ export class Viewer {
         // at a small cost to visual quality
         this.ignoreDevicePixelRatio = options.ignoreDevicePixelRatio || false;
         this.devicePixelRatio = this.ignoreDevicePixelRatio ? 1 : window.devicePixelRatio;
+
+        // Tells the viewer to use 16-bit floating point values when storing splat covariance data in textures, instead of 32-bit
+        this.halfPrecisionCovariancesOnGPU = options.halfPrecisionCovariancesOnGPU || false;
 
         // If 'threeScene' is valid, it will be rendered by the viewer along with the splat mesh
         this.threeScene = options.threeScene;
@@ -82,8 +101,14 @@ export class Viewer {
         // https://web.dev/articles/cross-origin-isolation-guide
         // If enabled, it requires specific CORS headers to be present in the response from the server that is sent when
         // loading the application. More information is available in the README.
-        //if (options.sharedMemoryForWorkers === undefined || options.sharedMemoryForWorkers === null) options.sharedMemoryForWorkers = true;
+        // if (options.sharedMemoryForWorkers === undefined || options.sharedMemoryForWorkers === null) options.sharedMemoryForWorkers = true;
         this.sharedMemoryForWorkers = false;
+
+        // if 'dynamicScene' is true, it tells the viewer to assume scene elements are not stationary or that the number of splats in the
+        // scene may change. This prevents optimizations that depend on a static scene from being made. Additionally, if 'dynamicScene' is
+        // true it tells the splat mesh to not apply scene tranforms to splat data that is returned by functions like
+        // SplatMesh.getSplatCenter() by default.
+        this.dynamicScene = !!options.dynamicScene;
 
         // When true, will perform additional steps during rendering to address artifacts caused by the rendering of gaussians at a
         // substantially different resolution than that at which they were rendered during training. This will only work correctly
@@ -92,7 +117,10 @@ export class Viewer {
         // https://github.com/graphdeco-inria/gaussian-splatting/issues/294#issuecomment-1772688093
         this.antialiased = options.antialiased || false;
 
-        this.webXRMode = false;
+        this.webXRMode = options.webXRMode || WebXRMode.None;
+        if (this.webXRMode !== WebXRMode.None) {
+            this.gpuAcceleratedSort = false;
+        }
         this.webXRActive = false;
 
         // if 'renderMode' is RenderMode.Always, then the viewer will rrender the scene on every update. If it is RenderMode.OnChange,
@@ -103,7 +131,7 @@ export class Viewer {
         // and a fast fade-in for non progressively loaded scenes.
         // SceneRevealMode.Gradual will force a slow fade-in for all scenes.
         // SceneRevealMode.Instant will force all loaded scene data to be immediately visible.
-        this.sceneRevealMode = 0;
+        this.sceneRevealMode = options.sceneRevealMode || SceneRevealMode.Default;
 
         // Hacky, experimental, non-scientific parameter for tweaking focal length related calculations. For scenes with very
         // small gaussians, small details, and small dimensions -- increasing this value can help improve visual quality.
@@ -113,11 +141,16 @@ export class Viewer {
         this.maxScreenSpaceSplatSize = options.maxScreenSpaceSplatSize || 1024;
 
         // The verbosity of console logging
-        this.logLevel = options.logLevel || LogLevel.Debug;
+        this.logLevel = options.logLevel || LogLevel.None;
 
         // Degree of spherical harmonics to utilize in rendering splats (assuming the data is present in the splat scene).
-        // Valid values are 0 - 3. Default value is 0.
+        // Valid values are 0 - 2. Default value is 0.
         this.sphericalHarmonicsDegree = options.sphericalHarmonicsDegree || 0;
+
+        // When true, allows for usage of extra properties and attributes during rendering for effects such as opacity adjustment.
+        // Default is false for performance reasons. These properties are separate from transform properties (scale, rotation, position)
+        // that are enabled by the 'dynamicScene' parameter.
+        this.enableOptionalEffects = options.enableOptionalEffects || false;
 
         // Enable the usage of SIMD WebAssembly instructions for the splat sort
         if (options.enableSIMDInSort === undefined || options.enableSIMDInSort === null) options.enableSIMDInSort = true;
@@ -149,6 +182,13 @@ export class Viewer {
             }
         }
 
+        // Tell the viewer how to render the splats
+        if (options.splatRenderMode === undefined || options.splatRenderMode === null) {
+            options.splatRenderMode = SplatRenderMode.ThreeD;
+        }
+        this.splatRenderMode = options.splatRenderMode;
+
+        this.onSplatMeshChangedCallback = null;
         this.createSplatMesh();
 
         this.controls = null;
@@ -172,9 +212,13 @@ export class Viewer {
         this.sortWorkerPrecomputedDistances = null;
         this.sortWorkerTransforms = null;
         this.runAfterNextSort = [];
+
+        this.selfDrivenModeRunning = false;
         this.splatRenderReady = false;
 
         this.raycaster = new Raycaster();
+
+        this.infoPanel = null;
 
         this.startInOrthographicMode = false;
 
@@ -201,20 +245,30 @@ export class Viewer {
         this.splatSceneDownloadAndBuildPromise = null;
         this.splatSceneRemovalPromise = null;
 
+        this.loadingSpinner = new LoadingSpinner(null, this.rootElement || document.body);
+        this.loadingSpinner.hide();
+        this.loadingProgressBar = new LoadingProgressBar(this.rootElement || document.body);
+        this.loadingProgressBar.hide();
+        this.infoPanel = new InfoPanel(this.rootElement || document.body);
+        this.infoPanel.hide();
+
         this.usingExternalCamera = (this.dropInMode || this.camera) ? true : false;
         this.usingExternalRenderer = (this.dropInMode || this.renderer) ? true : false;
 
         this.initialized = false;
         this.disposing = false;
         this.disposed = false;
+        this.disposePromise = null;
         if (!this.dropInMode) this.init();
     }
 
     createSplatMesh() {
-        this.splatMesh = new SplatMesh(false, false, false,
-                                       this.devicePixelRatio, this.gpuAcceleratedSort, this.integerBasedSort, this.antialiased,
-                                       this.maxScreenSpaceSplatSize, this.logLevel, this.sphericalHarmonicsDegree);
+        this.splatMesh = new SplatMesh(this.splatRenderMode, this.dynamicScene, this.enableOptionalEffects,
+                                       this.halfPrecisionCovariancesOnGPU, this.devicePixelRatio, this.gpuAcceleratedSort,
+                                       this.integerBasedSort, this.antialiased, this.maxScreenSpaceSplatSize, this.logLevel,
+                                       this.sphericalHarmonicsDegree);
         this.splatMesh.frustumCulled = false;
+        if (this.onSplatMeshChangedCallback) this.onSplatMeshChangedCallback();
     }
 
     init() {
@@ -235,6 +289,7 @@ export class Viewer {
 
         this.setupCamera();
         this.setupRenderer();
+        this.setupWebXR();
         this.setupControls();
         this.setupEventHandlers();
 
@@ -243,6 +298,10 @@ export class Viewer {
         this.sceneHelper.setupMeshCursor();
         this.sceneHelper.setupFocusMarker();
         this.sceneHelper.setupControlPlane();
+
+        this.loadingProgressBar.setContainer(this.rootElement);
+        this.loadingSpinner.setContainer(this.rootElement);
+        this.infoPanel.setContainer(this.rootElement);
 
         this.initialized = true;
     }
@@ -287,8 +346,28 @@ export class Viewer {
 
     }
 
+    setupWebXR() {
+        if (this.webXRMode) {
+            if (this.webXRMode === WebXRMode.VR) {
+                this.rootElement.appendChild(VRButton.createButton(this.renderer));
+            } else if (this.webXRMode === WebXRMode.AR) {
+                this.rootElement.appendChild(ARButton.createButton(this.renderer));
+            }
+            this.renderer.xr.addEventListener('sessionstart', (e) => {
+                this.webXRActive = true;
+            });
+            this.renderer.xr.addEventListener('sessionend', (e) => {
+                this.webXRActive = false;
+            });
+            this.renderer.xr.enabled = true;
+            this.camera.position.copy(this.initialCameraPosition);
+            this.camera.up.copy(this.cameraUp).normalize();
+            this.camera.lookAt(this.initialCameraLookAt);
+        }
+    }
+
     setupControls() {
-        if (this.useBuiltInControls) {
+        if (this.useBuiltInControls && this.webXRMode === WebXRMode.None) {
             if (!this.usingExternalCamera) {
                 this.perspectiveControls = new OrbitControls(this.perspectiveCamera, this.renderer.domElement);
                 this.orthographicControls = new OrbitControls(this.orthographicCamera, this.renderer.domElement);
@@ -299,7 +378,7 @@ export class Viewer {
                     this.perspectiveControls = new OrbitControls(this.camera, this.renderer.domElement);
                 }
             }
-            for (let controls of [this.perspectiveControls, this.orthographicControls]) {
+            for (let controls of [this.orthographicControls, this.perspectiveControls,]) {
                 if (controls) {
                     controls.listenToKeyEvents(window);
                     controls.rotateSpeed = 0.5;
@@ -308,14 +387,16 @@ export class Viewer {
                     controls.enableDamping = true;
                     controls.dampingFactor = 0.05;
                     controls.target.copy(this.initialCameraLookAt);
+                    controls.update();
                 }
             }
             this.controls = this.camera.isOrthographicCamera ? this.orthographicControls : this.perspectiveControls;
+            this.controls.update();
         }
     }
 
     setupEventHandlers() {
-        if (this.useBuiltInControls) {
+        if (this.useBuiltInControls && this.webXRMode === WebXRMode.None) {
             this.mouseMoveListener = this.onMouseMove.bind(this);
             this.renderer.domElement.addEventListener('pointermove', this.mouseMoveListener, false);
             this.mouseDownListener = this.onMouseDown.bind(this);
@@ -342,6 +423,10 @@ export class Viewer {
 
     setRenderMode(renderMode) {
         this.renderMode = renderMode;
+    }
+
+    onSplatMeshChanged(callback) {
+        this.onSplatMeshChangedCallback = callback;
     }
 
     onKeyDown = function() {
@@ -376,6 +461,14 @@ export class Viewer {
                 case 'KeyU':
                     this.showControlPlane = !this.showControlPlane;
                 break;
+                case 'KeyI':
+                    this.showInfo = !this.showInfo;
+                    if (this.showInfo) {
+                        this.infoPanel.show();
+                    } else {
+                        this.infoPanel.hide();
+                    }
+                break;
                 case 'KeyO':
                     if (!this.usingExternalCamera) {
                         this.setOrthographicMode(!this.camera.isOrthographicCamera);
@@ -397,7 +490,7 @@ export class Viewer {
                     }
                 break;
                 default:
-                    break;
+                break;
             }
         };
 
@@ -547,12 +640,23 @@ export class Viewer {
                 const focalAdjustment = this.focalAdjustment * focalMultiplier;
                 const inverseFocalAdjustment = 1.0 / focalAdjustment;
 
+                this.adjustForWebXRStereo(renderDimensions);
                 this.splatMesh.updateUniforms(renderDimensions, focalLengthX * focalAdjustment, focalLengthY * focalAdjustment,
                                               this.camera.isOrthographicCamera, this.camera.zoom || 1.0, inverseFocalAdjustment);
             }
         };
 
     }();
+
+    adjustForWebXRStereo(renderDimensions) {
+        // TODO: Figure out a less hacky way to determine if stereo rendering is active
+        if (this.camera && this.webXRActive) {
+            const xrCamera = this.renderer.xr.getCamera();
+            const xrCameraProj00 = xrCamera.projectionMatrix.elements[0];
+            const cameraProj00 = this.camera.projectionMatrix.elements[0];
+            renderDimensions.x *= (cameraProj00 / xrCameraProj00);
+        }
+    }
 
     isLoadingOrUnloading() {
         return Object.keys(this.splatSceneDownloadPromises).length > 0 || this.splatSceneDownloadAndBuildPromise !== null ||
@@ -600,57 +704,98 @@ export class Viewer {
      * }
      * @return {AbortablePromise}
      */
-
     addSplatScene(path, options = {}) {
-    if (this.isLoadingOrUnloading()) {
-        throw new Error('Cannot add splat scene while another load or unload is already in progress.');
-    }
 
-    if (this.isDisposingOrDisposed()) {
-        throw new Error('Cannot add splat scene after dispose() is called.');
-    }
+        if (this.isLoadingOrUnloading()) {
+            throw new Error('Cannot add splat scene while another load or unload is already in progress.');
+        }
 
+        if (this.isDisposingOrDisposed()) {
+            throw new Error('Cannot add splat scene after dispose() is called.');
+        }
 
-    const format = (options.format !== undefined && options.format !== null) ? options.format : sceneFormatFromPath(path);
-    const progressiveLoad = false; // set progressiveload to false
-    const showLoadingUI = (options.showLoadingUI !== undefined && options.showLoadingUI !== null) ? options.showLoadingUI : true;
+        if (options.progressiveLoad && this.splatMesh.scenes && this.splatMesh.scenes.length > 0) {
+            options.progressiveLoad = false;
+        }
 
-    const hideLoadingUI = () => {
-        console.log('hideLoadingUI');
-    };
+        const format = (options.format !== undefined && options.format !== null) ? options.format : sceneFormatFromPath(path);
+        const progressiveLoad = Viewer.isProgressivelyLoadable(format) && options.progressiveLoad;
+        const showLoadingUI = (options.showLoadingUI !== undefined && options.showLoadingUI !== null) ? options.showLoadingUI : true;
 
-    const onProgress = (percentComplete, percentCompleteLabel, loaderStatus) => {
-        if (options.onProgress) options.onProgress(percentComplete, percentCompleteLabel, loaderStatus);
-    };
-
-    console.log('addSplatScene(): progressiveLoad = ' + progressiveLoad);
-
-    const buildSection = (splatBuffer, firstBuild, finalBuild) => {
-        if (!progressiveLoad && options.onProgress) options.onProgress(0, '0%', LoaderStatus.Processing);
-        const addSplatBufferOptions = {
-            'rotation': options.rotation || options.orientation,
-            'position': options.position,
-            'scale': options.scale,
-            'splatAlphaRemovalThreshold': options.splatAlphaRemovalThreshold,
+        let loadingUITaskId = null;
+        if (showLoadingUI) {
+            this.loadingSpinner.removeAllTasks();
+            loadingUITaskId = this.loadingSpinner.addTask('Downloading...');
+        }
+        const hideLoadingUI = () => {
+            this.loadingProgressBar.hide();
+            this.loadingSpinner.removeAllTasks();
         };
-        return this.addSplatBuffers([splatBuffer], [addSplatBufferOptions],
-                                    finalBuild, firstBuild && showLoadingUI, showLoadingUI,
-                                    progressiveLoad, progressiveLoad);
-    };
 
-    /*
-    const loadFunc = progressiveLoad ? this.downloadAndBuildSingleSplatSceneProgressiveLoad.bind(this) :
-                                       this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
-                                       */
-    
-    const loadFunc = this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
-    return loadFunc(path, format, options.splatAlphaRemovalThreshold, buildSection.bind(this), onProgress, hideLoadingUI.bind(this))
-        .catch(error => {
-            console.error(`Error in loadFunc for path ${path}:`, error);
-            throw error; // Ensure the error is thrown to be caught by the calling code
-        });
-}
+        const onProgressUIUpdate = (percentComplete, percentCompleteLabel, loaderStatus) => {
+            if (showLoadingUI) {
+                if (loaderStatus === LoaderStatus.Downloading) {
+                    if (percentComplete === 100) {
+                        this.loadingSpinner.setMessageForTask(loadingUITaskId, 'Download complete!');
+                    } else {
+                        if (progressiveLoad) {
+                            this.loadingSpinner.setMessageForTask(loadingUITaskId, 'Downloading splats...');
+                        } else {
+                            const suffix = percentCompleteLabel ? `: ${percentCompleteLabel}` : `...`;
+                            this.loadingSpinner.setMessageForTask(loadingUITaskId, `Downloading${suffix}`);
+                        }
+                    }
+                } else if (loaderStatus === LoaderStatus.Processing) {
+                    this.loadingSpinner.setMessageForTask(loadingUITaskId, 'Processing splats...');
+                }
+            }
+        };
 
+        let downloadDone = false;
+        let downloadedPercentage = 0;
+        const splatBuffersAddedUIUpdate = (firstBuild, finalBuild) => {
+            if (showLoadingUI) {
+                if ((firstBuild && progressiveLoad) || (finalBuild && !progressiveLoad)) {
+                    this.loadingSpinner.removeTask(loadingUITaskId);
+                    if (!finalBuild && !downloadDone) this.loadingProgressBar.show();
+                }
+                if (progressiveLoad) {
+                    if (finalBuild) {
+                        downloadDone = true;
+                        this.loadingProgressBar.hide();
+                    } else {
+                        this.loadingProgressBar.setProgress(downloadedPercentage);
+                    }
+                }
+            }
+        };
+
+        const onProgress = (percentComplete, percentCompleteLabel, loaderStatus) => {
+            downloadedPercentage = percentComplete;
+            onProgressUIUpdate(percentComplete, percentCompleteLabel, loaderStatus);
+            if (options.onProgress) options.onProgress(percentComplete, percentCompleteLabel, loaderStatus);
+        };
+
+        const buildSection = (splatBuffer, firstBuild, finalBuild) => {
+            if (!progressiveLoad && options.onProgress) options.onProgress(0, '0%', LoaderStatus.Processing);
+            const addSplatBufferOptions = {
+                'rotation': options.rotation || options.orientation,
+                'position': options.position,
+                'scale': options.scale,
+                'splatAlphaRemovalThreshold': options.splatAlphaRemovalThreshold,
+            };
+            return this.addSplatBuffers([splatBuffer], [addSplatBufferOptions],
+                                         finalBuild, firstBuild && showLoadingUI, showLoadingUI,
+                                         progressiveLoad, progressiveLoad).then(() => {
+                if (!progressiveLoad && options.onProgress) options.onProgress(100, '100%', LoaderStatus.Processing);
+                splatBuffersAddedUIUpdate(firstBuild, finalBuild);
+            });
+        };
+
+        const loadFunc = progressiveLoad ? this.downloadAndBuildSingleSplatSceneProgressiveLoad.bind(this) :
+                                           this.downloadAndBuildSingleSplatSceneStandardLoad.bind(this);
+        return loadFunc(path, format, options.splatAlphaRemovalThreshold, buildSection.bind(this), onProgress, hideLoadingUI.bind(this));
+    }
 
     /**
      * Download a single splat scene, convert to splat buffer and then rebuild the viewer's splat mesh
@@ -667,6 +812,7 @@ export class Viewer {
     downloadAndBuildSingleSplatSceneStandardLoad(path, format, splatAlphaRemovalThreshold, buildFunc, onProgress, onException) {
 
         const downloadAndBuildPromise = nativePromiseWithExtractedComponents();
+
         const downloadPromise = this.downloadSplatSceneToSplatBuffer(path, splatAlphaRemovalThreshold, onProgress, false, undefined, format)
         .then((splatBuffer) => {
             this.removeSplatSceneDownloadPromise(downloadPromise);
@@ -804,12 +950,24 @@ export class Viewer {
         const fileCount = sceneOptions.length;
         const percentComplete = [];
 
+        let loadingUITaskId;
+        if (showLoadingUI) {
+            this.loadingSpinner.removeAllTasks();
+            loadingUITaskId = this.loadingSpinner.addTask('Downloading...');
+        }
+
         const onLoadProgress = (fileIndex, percent, percentLabel, loaderStatus) => {
             percentComplete[fileIndex] = percent;
             let totalPercent = 0;
             for (let i = 0; i < fileCount; i++) totalPercent += percentComplete[i] || 0;
             totalPercent = totalPercent / fileCount;
             percentLabel = `${totalPercent.toFixed(2)}%`;
+            if (showLoadingUI) {
+                if (loaderStatus === LoaderStatus.Downloading) {
+                    this.loadingSpinner.setMessageForTask(loadingUITaskId, totalPercent === 100 ?
+                                                          `Download complete!` : `Downloading: ${percentLabel}`);
+                }
+            }
             if (onProgress) onProgress(totalPercent, percentLabel, loaderStatus);
         };
 
@@ -830,6 +988,7 @@ export class Viewer {
         const downloadPromise = new AbortablePromise((resolve, reject) => {
             Promise.all(nativeLoadPromises)
             .then((splatBuffers) => {
+                if (showLoadingUI) this.loadingSpinner.removeTask(loadingUITaskId);
                 if (onProgress) onProgress(0, '0%', LoaderStatus.Processing);
                 this.addSplatBuffers(splatBuffers, sceneOptions, true, showLoadingUI, showLoadingUI, false, false).then(() => {
                     if (onProgress) onProgress(100, '100%', LoaderStatus.Processing);
@@ -838,6 +997,7 @@ export class Viewer {
                 });
             })
             .catch((e) => {
+                if (showLoadingUI) this.loadingSpinner.removeTask(loadingUITaskId);
                 this.clearSplatSceneDownloadAndBuildPromise();
                 if (!(e instanceof AbortedPromiseError)) {
                     reject(new Error(`Viewer::addSplatScenes -> Could not load one or more splat scenes.`));
@@ -864,25 +1024,25 @@ export class Viewer {
      *                                            value (valid range: 0 - 255), defaults to 1
      *
      * @param {function} onProgress Function to be called as file data are received
-    /**
- * @param {boolean} progressiveBuild Construct file sections into splat buffers as they are downloaded
- * @param {function} onSectionBuilt Function to be called when new section is added to the file
- * @param {string} format File format of the scene
- * @return {AbortablePromise}
- */
-downloadSplatSceneToSplatBuffer(path, splatAlphaRemovalThreshold = 1, onProgress = undefined,
-    progressiveBuild = false, onSectionBuilt = undefined, format) {
-if (format === SceneFormat.Splat) {
-return SplatLoader.loadFromURL(path, onProgress, progressiveBuild,
-           onSectionBuilt, splatAlphaRemovalThreshold, 0, false);
-} else if (format === SceneFormat.KSplat) {
-return KSplatLoader.loadFromURL(path, onProgress, progressiveBuild, onSectionBuilt);
-} else if (format === SceneFormat.Ply) {
-return PlyLoader.loadFromURL(path, onProgress, progressiveBuild, onSectionBuilt,
-         splatAlphaRemovalThreshold, this.plyInMemoryCompressionLevel, this.sphericalHarmonicsDegree);
-}
-return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffer -> File format not supported: ${path}`));
-}
+     * @param {boolean} progressiveBuild Construct file sections into splat buffers as they are downloaded
+     * @param {function} onSectionBuilt Function to be called when new section is added to the file
+     * @param {string} format File format of the scene
+     * @return {AbortablePromise}
+     */
+    downloadSplatSceneToSplatBuffer(path, splatAlphaRemovalThreshold = 1, onProgress = undefined,
+                                    progressiveBuild = false, onSectionBuilt = undefined, format) {
+        if (format === SceneFormat.Splat) {
+            return SplatLoader.loadFromURL(path, onProgress, progressiveBuild,
+                                           onSectionBuilt, splatAlphaRemovalThreshold, 0, false);
+        } else if (format === SceneFormat.KSplat) {
+            return KSplatLoader.loadFromURL(path, onProgress, progressiveBuild, onSectionBuilt);
+        } else if (format === SceneFormat.Ply) {
+            return PlyLoader.loadFromURL(path, onProgress, progressiveBuild, onSectionBuilt,
+                                         splatAlphaRemovalThreshold, this.plyInMemoryCompressionLevel, this.sphericalHarmonicsDegree);
+        }
+
+        throw new Error(`Viewer::downloadSplatSceneToSplatBuffer -> File format not supported: ${path}`);
+    }
 
     static isProgressivelyLoadable(format) {
         return format === SceneFormat.Splat || format === SceneFormat.KSplat || format === SceneFormat.Ply;
@@ -893,29 +1053,28 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
      * This function will terminate the existing sort worker (if there is one).
      */
     addSplatBuffers = function() {
-        return function(splatBuffers, splatBufferOptions = [], finalBuild = true, showLoadingUI = false,
+        return function(splatBuffers, splatBufferOptions = [], finalBuild = true, showLoadingUI = true,
                         showLoadingUIForSplatTreeBuild = true, replaceExisting = false,
                         enableRenderBeforeFirstSort = false, preserveVisibleRegion = true) {
-    
-    
-            if (this.isDisposingOrDisposed()) {
-                console.log('Object is disposing or disposed. Exiting addSplatBuffers.');
-                return Promise.resolve();
-            }
-    
+
+            if (this.isDisposingOrDisposed()) return Promise.resolve();
+
             this.splatRenderReady = false;
             let splatProcessingTaskId = null;
-    
-            const finish = (buildResults, resolver) => {
-                console.log('Finish function called with buildResults:', buildResults);
-    
-                if (this.isDisposingOrDisposed()) {
-                    console.log('Object is disposing or disposed. Exiting finish function.');
-                    return;
+
+            const removeSplatProcessingTask = () => {
+                if (splatProcessingTaskId !== null) {
+                    this.loadingSpinner.removeTask(splatProcessingTaskId);
+                    splatProcessingTaskId = null;
                 }
-    
+            };
+
+            const finish = (buildResults, resolver) => {
+                if (this.isDisposingOrDisposed()) return;
+
+                // If we aren't calculating the splat distances from the center on the GPU, the sorting worker needs splat centers and
+                // transform indexes so that it can calculate those distance values.
                 if (!this.gpuAcceleratedSort && this.sortWorker) {
-                    console.log('Posting message to sortWorker with centers and sceneIndexes.');
                     this.sortWorker.postMessage({
                         'centers': buildResults.centers.buffer,
                         'sceneIndexes': buildResults.sceneIndexes.buffer,
@@ -926,65 +1085,53 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                         }
                     });
                 }
-    
+
                 this.updateSplatSort(true);
-    
-                if (enableRenderBeforeFirstSort) {
+                if (!this.sortWorker) {
                     this.splatRenderReady = true;
-                    console.log('Render before first sort enabled, setting splatRenderReady to true.');
+                    removeSplatProcessingTask();
+                    resolver();
                 } else {
-                    this.runAfterNextSort.push(() => {
+                    if (enableRenderBeforeFirstSort) {
                         this.splatRenderReady = true;
-                        console.log('Render after next sort, setting splatRenderReady to true.');
+                    } else {
+                        this.runAfterNextSort.push(() => {
+                            this.splatRenderReady = true;
+                        });
+                    }
+                    this.runAfterNextSort.push(() => {
+                        removeSplatProcessingTask();
+                        resolver();
                     });
                 }
-    
-                this.runAfterNextSort.push(() => {
-                    if (splatProcessingTaskId !== null) {
-                        splatProcessingTaskId = null;
-                        console.log('Resetting splatProcessingTaskId.');
-                    }
-                    resolver();
-                });
             };
-    
+
             return new Promise((resolve) => {
-                console.log('Creating new promise for addSplatBuffers.');
+                if (showLoadingUI) {
+                    splatProcessingTaskId = this.loadingSpinner.addTask('Processing splats...');
+                }
                 delayedExecute(() => {
                     if (this.isDisposingOrDisposed()) {
-                        console.log('Object is disposing or disposed. Resolving promise.');
                         resolve();
                     } else {
-                        console.log('Calling addSplatBuffersToMesh with parameters:', {
-                            splatBuffers,
-                            splatBufferOptions,
-                            finalBuild,
-                            showLoadingUIForSplatTreeBuild,
-                            replaceExisting,
-                            preserveVisibleRegion
-                        });
                         const buildResults = this.addSplatBuffersToMesh(splatBuffers, splatBufferOptions, finalBuild,
                                                                         showLoadingUIForSplatTreeBuild, replaceExisting,
                                                                         preserveVisibleRegion);
-                        console.log('Received buildResults from addSplatBuffersToMesh:', buildResults);
                         const maxSplatCount = this.splatMesh.getMaxSplatCount();
-                        console.log('Max splat count:', maxSplatCount);
-                        if (this.sortWorker && this.sortWorker.maxSplatCount !== maxSplatCount) {
-                            console.log('Disposing sortWorker due to maxSplatCount mismatch.');
-                            this.disposeSortWorker();
-                        }
+                        if (this.sortWorker && this.sortWorker.maxSplatCount !== maxSplatCount) this.disposeSortWorker();
                         const sortWorkerSetupPromise = (!this.sortWorker && maxSplatCount > 0) ?
                                                          this.setupSortWorker(this.splatMesh) : Promise.resolve();
+
                         sortWorkerSetupPromise.then(() => {
-                            console.log('sortWorker setup complete. Calling finish.');
+                            console.log(34)
                             finish(buildResults, resolve);
                         });
                     }
                 }, true);
             });
         };
+
     }();
-    
 
     /**
      * Add one or more instances of SplatBuffer to the SplatMesh instance managed by the viewer. By default, this function is additive;
@@ -1024,10 +1171,18 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
             if (this.renderer) this.splatMesh.setRenderer(this.renderer);
             const onSplatTreeIndexesUpload = (finished) => {
                 if (this.isDisposingOrDisposed()) return;
+                const splatCount = this.splatMesh.getSplatCount();
+                if (showLoadingUIForSplatTreeBuild && splatCount >= MIN_SPLAT_COUNT_TO_SHOW_SPLAT_TREE_LOADING_SPINNER) {
+                    if (!finished && !splatOptimizingTaskId) {
+                        this.loadingSpinner.setMinimized(true, true);
+                        splatOptimizingTaskId = this.loadingSpinner.addTask('Optimizing splats...');
+                    }
+                }
             };
             const onSplatTreeReady = (finished) => {
                 if (this.isDisposingOrDisposed()) return;
                 if (finished && splatOptimizingTaskId) {
+                    this.loadingSpinner.removeTask(splatOptimizingTaskId);
                     splatOptimizingTaskId = null;
                 }
             };
@@ -1049,14 +1204,15 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         return new Promise((resolve) => {
             const DistancesArrayType = this.integerBasedSort ? Int32Array : Float32Array;
             const splatCount = splatMesh.getSplatCount();
-            const maxSplatCount = splatMesh.getMaxSplatCount();
+            const maxSplatCount = splatMesh.getMaxSplatCount(); // can be logged
+
             this.sortWorker = createSortWorker(maxSplatCount, this.sharedMemoryForWorkers, this.enableSIMDInSort,
                                                this.integerBasedSort, this.splatMesh.dynamicMode);
-                                               
+            
+            console.log(this.sortWorker)
+
             this.sortWorker.onmessage = (e) => {
-                console.log('Sort worker message received:', e.data);
                 if (e.data.sortDone) {
-                    console.log(1);
                     this.sortRunning = false;
                     if (this.sharedMemoryForWorkers) {
                         this.splatMesh.updateRenderIndexes(this.sortWorkerSortedIndexes, e.data.splatRenderCount);
@@ -1075,10 +1231,8 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                         this.runAfterNextSort.length = 0;
                     }
                 } else if (e.data.sortCanceled) {
-                    console.log(2);
                     this.sortRunning = false;
                 } else if (e.data.sortSetupPhase1Complete) {
-                    console.log(3);
                     if (this.logLevel >= LogLevel.Info) console.log('Sorting web worker WASM setup complete.');
                     if (this.sharedMemoryForWorkers) {
                         this.sortWorkerSortedIndexes = new Uint32Array(e.data.sortedIndexesBuffer,
@@ -1091,22 +1245,19 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                          this.sortWorkerTransforms = new Float32Array(e.data.transformsBuffer,
                                                                       e.data.transformsOffset, Constants.MaxScenes * 16);
                     } else {
-                        console.log(4);
                         this.sortWorkerIndexesToSort = new Uint32Array(maxSplatCount);
                         this.sortWorkerPrecomputedDistances = new DistancesArrayType(maxSplatCount);
                         this.sortWorkerTransforms = new Float32Array(Constants.MaxScenes * 16);
                     }
-
                     for (let i = 0; i < splatCount; i++) this.sortWorkerIndexesToSort[i] = i;
                     this.sortWorker.maxSplatCount = maxSplatCount;
+
                     if (this.logLevel >= LogLevel.Info) {
-                        console.log('Sorting web worker ready.');
                         const splatDataTextures = this.splatMesh.getSplatDataTextures();
                         const covariancesTextureSize = splatDataTextures.covariances.size;
                         const centersColorsTextureSize = splatDataTextures.centerColors.size;
-                        console.log('Covariances texture size: ' + covariancesTextureSize.x + ' x ' + covariancesTextureSize.y);
-                        console.log('Centers/colors texture size: ' + centersColorsTextureSize.x + ' x ' + centersColorsTextureSize.y);
                     }
+
                     resolve();
                 }
             };
@@ -1124,7 +1275,11 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         this.sortRunning = false;
     }
 
-    removeSplatScene(index, showLoadingUI = true) {
+    removeSplatScene(indexToRemove, showLoadingUI = true) {
+        return this.removeSplatScenes([indexToRemove], showLoadingUI);
+    }
+
+    removeSplatScenes(indexesToRemove, showLoadingUI = true) {
         if (this.isLoadingOrUnloading()) {
             throw new Error('Cannot remove splat scene while another load or unload is already in progress.');
         }
@@ -1136,7 +1291,23 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         let sortPromise;
 
         this.splatSceneRemovalPromise = new Promise((resolve, reject) => {
+            let revmovalTaskId;
+
+            if (showLoadingUI) {
+                this.loadingSpinner.removeAllTasks();
+                this.loadingSpinner.show();
+                revmovalTaskId = this.loadingSpinner.addTask('Removing splat scene...');
+            }
+
+            const checkAndHideLoadingUI = () => {
+                if (showLoadingUI) {
+                    this.loadingSpinner.hide();
+                    this.loadingSpinner.removeTask(revmovalTaskId);
+                }
+            };
+
             const onDone = (error) => {
+                checkAndHideLoadingUI();
                 this.splatSceneRemovalPromise = null;
                 if (!error) resolve();
                 else reject(error);
@@ -1157,7 +1328,14 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                 const savedSceneOptions = [];
                 const savedSceneTransformComponents = [];
                 for (let i = 0; i < this.splatMesh.scenes.length; i++) {
-                    if (i !== index) {
+                    let shouldRemove = false;
+                    for (let indexToRemove of indexesToRemove) {
+                        if (indexToRemove === i) {
+                            shouldRemove = true;
+                            break;
+                        }
+                    }
+                    if (!shouldRemove) {
                         const scene = this.splatMesh.scenes[i];
                         savedSplatBuffers.push(scene.splatBuffer);
                         savedSceneOptions.push(this.splatMesh.sceneOptions[i]);
@@ -1170,10 +1348,12 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                 }
                 this.disposeSortWorker();
                 this.splatMesh.dispose();
+                this.sceneRevealMode = SceneRevealMode.Instant;
                 this.createSplatMesh();
                 this.addSplatBuffers(savedSplatBuffers, savedSceneOptions, true, false, true)
                 .then(() => {
                     if (checkForEarlyExit()) return;
+                    checkAndHideLoadingUI();
                     this.splatMesh.scenes.forEach((scene, index) => {
                         scene.position.copy(savedSceneTransformComponents[index].position);
                         scene.quaternion.copy(savedSceneTransformComponents[index].quaternion);
@@ -1203,36 +1383,57 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         return this.splatSceneRemovalPromise;
     }
 
+    /**
+     * Start self-driven mode
+     */
+    start() {
+        if (this.selfDrivenMode) {
+            console.log('Starting self-driven mode...');                                        
+            if (this.webXRMode) {
+                this.renderer.setAnimationLoop(this.selfDrivenUpdateFunc);
+            } else {
+                this.requestFrameId = requestAnimationFrame(this.selfDrivenUpdateFunc);
+            }
+            this.selfDrivenModeRunning = true;
+        } else {
+            throw new Error('Cannot start viewer unless it is in self driven mode.');
+        }
+    }
+
+    /**
+     * Stop self-driven mode
+     */
+    stop() {
+        if (this.selfDrivenMode && this.selfDrivenModeRunning) {
+            if (!this.webXRMode) {
+                cancelAnimationFrame(this.requestFrameId);
+            }
+            this.selfDrivenModeRunning = false;
+        }
+    }
+
+    /**
+     * Dispose of all resources held directly and indirectly by this viewer.
+     */
     async dispose() {
-        this.disposing = true;
+        if (this.isDisposingOrDisposed()) return this.disposePromise;
+
         let waitPromises = [];
         let promisesToAbort = [];
-    
         for (let promiseKey in this.splatSceneDownloadPromises) {
             if (this.splatSceneDownloadPromises.hasOwnProperty(promiseKey)) {
                 const downloadPromiseToAbort = this.splatSceneDownloadPromises[promiseKey];
-                if (!downloadPromiseToAbort.isResolved) { // Assuming you have a way to track if the promise is resolved
-                    promisesToAbort.push(downloadPromiseToAbort);
-                    waitPromises.push(downloadPromiseToAbort.promise.catch(err => {
-                        // Handle the error here
-                        if (err.message !== 'Scene disposed') {
-                            console.error('Unhandled promise rejection:', err);
-                        }
-                    }));
-                }
+                promisesToAbort.push(downloadPromiseToAbort);
+                waitPromises.push(downloadPromiseToAbort.promise);
             }
         }
-    
         if (this.sortPromise) {
-            waitPromises.push(this.sortPromise.catch(err => {
-                // Handle the error here
-                if (err.message !== 'Scene disposed') {
-                    console.error('Unhandled sort promise rejection:', err);
-                }
-            }));
+            waitPromises.push(this.sortPromise);
         }
-    
-        const disposePromise = Promise.all(waitPromises).finally(() => {
+
+        this.disposing = true;
+        this.disposePromise = Promise.all(waitPromises).finally(() => {
+            this.stop();
             if (this.controls) {
                 this.controls.dispose();
                 this.controls = null;
@@ -1251,7 +1452,13 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
             }
             this.disposeSortWorker();
             this.removeEventHandlers();
-    
+
+            this.loadingSpinner.removeAllTasks();
+            this.loadingSpinner.setContainer(null);
+            this.loadingProgressBar.hide();
+            this.loadingProgressBar.setContainer(null);
+            this.infoPanel.setContainer(null);
+
             this.camera = null;
             this.threeScene = null;
             this.splatRenderReady = false;
@@ -1263,11 +1470,11 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
                 }
                 this.renderer = null;
             }
-    
+
             if (!this.usingExternalRenderer) {
                 document.body.removeChild(this.rootElement);
             }
-    
+
             this.sortWorkerSortedIndexes = null;
             this.sortWorkerIndexesToSort = null;
             this.sortWorkerPrecomputedDistances = null;
@@ -1275,17 +1482,14 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
             this.disposed = true;
             this.disposing = false;
         });
-    
         promisesToAbort.forEach((toAbort) => {
             toAbort.abort('Scene disposed');
         });
-    
-        return disposePromise;
+        return this.disposePromise;
     }
-    
 
     selfDrivenUpdate() {
-        if (this.selfDrivenMode) {
+        if (this.selfDrivenMode && !this.webXRMode) {
             this.requestFrameId = requestAnimationFrame(this.selfDrivenUpdateFunc);
         }
         this.update();
@@ -1378,7 +1582,10 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         this.updateForRendererSizeChanges();
         this.updateSplatMesh();
         this.updateMeshCursor();
+        this.updateFPS();
         this.timingSensitiveUpdates();
+        this.updateInfoPanel();
+        this.updateControlPlane();
     }
 
     updateForDropInMode(renderer, camera) {
@@ -1388,6 +1595,29 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
         if (this.controls) this.controls.object = camera;
         this.init();
     }
+
+    updateFPS = function() {
+
+        let lastCalcTime = getCurrentTime();
+        let frameCount = 0;
+
+        return function() {
+            if (this.consecutiveRenderFrames > CONSECUTIVE_RENDERED_FRAMES_FOR_FPS_CALCULATION) {
+                const currentTime = getCurrentTime();
+                const calcDelta = currentTime - lastCalcTime;
+                if (calcDelta >= 1.0) {
+                    this.currentFPS = frameCount;
+                    frameCount = 0;
+                    lastCalcTime = currentTime;
+                } else {
+                    frameCount++;
+                }
+            } else {
+                this.currentFPS = null;
+            }
+        };
+
+    }();
 
     updateForRendererSizeChanges = function() {
 
@@ -1436,9 +1666,9 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
 
     updateCameraTransition = function() {
 
-        const tempCameraTarget = new THREE.Vector3();
-        const toPreviousTarget = new THREE.Vector3();
-        const toNextTarget = new THREE.Vector3();
+        let tempCameraTarget = new THREE.Vector3();
+        let toPreviousTarget = new THREE.Vector3();
+        let toNextTarget = new THREE.Vector3();
 
         return function(currentTime) {
             if (this.transitioningCameraTarget) {
@@ -1516,6 +1746,35 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
 
     }();
 
+    updateInfoPanel = function() {
+
+        const renderDimensions = new THREE.Vector2();
+
+        return function() {
+            if (!this.showInfo) return;
+            const splatCount = this.splatMesh.getSplatCount();
+            this.getRenderDimensions(renderDimensions);
+            const cameraLookAtPosition = this.controls ? this.controls.target : null;
+            const meshCursorPosition = this.showMeshCursor ? this.sceneHelper.meshCursor.position : null;
+            const splatRenderCountPct = splatCount > 0 ? this.splatRenderCount / splatCount * 100 : 0;
+            this.infoPanel.update(renderDimensions, this.camera.position, cameraLookAtPosition,
+                                  this.camera.up, this.camera.isOrthographicCamera, meshCursorPosition,
+                                  this.currentFPS || 'N/A', splatCount, this.splatRenderCount, splatRenderCountPct,
+                                  this.lastSortTime, this.focalAdjustment, this.splatMesh.getSplatScale(),
+                                  this.splatMesh.getPointCloudModeEnabled());
+        };
+
+    }();
+
+    updateControlPlane() {
+        if (this.showControlPlane) {
+            this.sceneHelper.setControlPlaneVisibility(true);
+            this.sceneHelper.positionAndOrientControlPlane(this.controls.target, this.camera.up);
+        } else {
+            this.sceneHelper.setControlPlaneVisibility(false);
+        }
+    }
+
     updateSplatSort = function() {
 
         const mvpMatrix = new THREE.Matrix4();
@@ -1543,7 +1802,10 @@ return AbortablePromise.reject(new Error(`Viewer::downloadSplatSceneToSplatBuffe
 
         return async function(force = false) {
             if (this.sortRunning) return;
-            if (this.splatMesh.getSplatCount() <= 0) return;
+            if (this.splatMesh.getSplatCount() <= 0) {
+                this.splatRenderCount = 0;
+                return;
+            }
 
             let angleDiff = 0;
             let positionDiff = 0;

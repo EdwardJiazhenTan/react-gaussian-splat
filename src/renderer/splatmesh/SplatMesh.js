@@ -147,7 +147,6 @@ export class SplatMesh extends THREE.Mesh {
      * @return {Array<THREE.Matrix4>}
      */
     static buildScenes(splatBuffers, sceneOptions) {
-        console.log("building scenes now");
         const scenes = [];
         scenes.length = splatBuffers.length;
         for (let i = 0; i < splatBuffers.length; i++) {
@@ -165,8 +164,6 @@ export class SplatMesh extends THREE.Mesh {
     }
 
     static createScene(splatBuffer, position, rotation, scale, minimumAlpha) {
-
-        console.log("creating scenes now, splatBuffer: ", splatBuffer, "position: ", position, "rotation: ", rotation, "scale: ", scale, "minimumAlpha: ", minimumAlpha);
         return new SplatScene(splatBuffer, position, rotation, scale, minimumAlpha);
     }
 
@@ -243,11 +240,7 @@ export class SplatMesh extends THREE.Mesh {
                         }
                     });
                     if (this.logLevel >= LogLevel.Info) {
-                        console.log(`SplatTree leaves: ${this.splatTree.countLeaves()}`);
-                        console.log(`SplatTree leaves with splats:${leavesWithVertices}`);
                         avgSplatCount = avgSplatCount / nodeCount;
-                        console.log(`Avg splat count per node: ${avgSplatCount}`);
-                        console.log(`Total splat count: ${this.getSplatCount()}`);
                     }
                     resolve();
                 }
@@ -284,7 +277,6 @@ export class SplatMesh extends THREE.Mesh {
 
         this.sceneOptions = sceneOptions;
         this.finalBuild = finalBuild;
-        console.log("Construct this instance of SplatMesh.");
 
         const maxSplatCount = SplatMesh.getTotalMaxSplatCountForSplatBuffers(splatBuffers);
 
@@ -435,7 +427,6 @@ export class SplatMesh extends THREE.Mesh {
         this.disposeMeshData();
         this.disposeTextures();
         this.disposeSplatTree();
-        console.log("disposing splat mesh: meshdata, textures, splat tree disposed.");
         if (this.enableDistancesComputationOnGPU) {
             if (this.computeDistancesOnGPUSyncTimeout) {
                 clearTimeout(this.computeDistancesOnGPUSyncTimeout);
@@ -1201,7 +1192,6 @@ export class SplatMesh extends THREE.Mesh {
      * @param {THREE.WebGLRenderer} renderer Instance of THREE.WebGLRenderer
      */
     setRenderer(renderer) {
-        console.log('setRenderer, set the three.js renderer used by this splat mesh');
         if (renderer !== this.renderer) {
             this.renderer = renderer;
             const gl = this.renderer.getContext();
@@ -1241,7 +1231,6 @@ export class SplatMesh extends THREE.Mesh {
 
             const createShader = (gl, type, source) => {
                 const shader = gl.createShader(type);
-                console.log('createShader, create a shader object')
                 if (!shader) {
                     console.error('Fatal error: gl could not create a shader object.');
                     return null;
@@ -1259,9 +1248,6 @@ export class SplatMesh extends THREE.Mesh {
                     console.error('Failed to compile ' + typeName + ' with these errors:' + errors);
                     gl.deleteShader(shader);
                     return null;
-                }
-                else{
-                    console.log('compileShader, compile the shader object')
                 }
                 return shader;
             };
@@ -1502,7 +1488,6 @@ export class SplatMesh extends THREE.Mesh {
     fillTransformsArray = function() {
 
         const tempArray = [];
-        console.log('fillTransformsArray, fill the array with the transforms for each scene in this splat mesh')
         return function(array) {
             if (tempArray.length !== array.length) tempArray.length = array.length;
             for (let i = 0; i < this.scenes.length; i++) {

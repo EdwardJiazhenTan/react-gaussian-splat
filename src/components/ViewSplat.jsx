@@ -5,25 +5,18 @@ const ViewSplat = () => {
   const mountRef = useRef(null);
 
   useEffect(() => {
-    const mount = mountRef.current;
 
     const viewer = new Viewer({
-      cameraUp: [0, 1, 0],
-      initialCameraPosition: [0, 0, 0],
-      initialCameraLookAt: [0, 0, 0],
-      container: mount // Ensure the viewer is attached to the mountRef element
+      'cameraUp': [0, -1, -0.54],
+      'initialCameraPosition': [-3.15634, -0.16946, -0.51552],
+      'initialCameraLookAt': [1.52976, 2.27776, 1.65898],
+      'sphericalHarmonicsDegree': 2
     });
 
     viewer.addSplatScene('/lego.ply', {
-      splatAlphaRemovalThreshold: 5,
-      showLoadingUI: true,
-      position: [0, 1, 0],
-      rotation: [0, 0, 0, 1],
-      scale: [1.5, 1.5, 1.5]
+      'progressiveLoad' : false
     }).then(() => {
       viewer.start();
-    }).catch((error) => {
-      console.error('Error loading splat scene:', error);
     });
   }, []);
 
