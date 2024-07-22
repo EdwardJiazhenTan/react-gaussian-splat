@@ -8,5 +8,4 @@ npm install --save three
 
 ## note
 
-proggresiveload is set to false in viewer.js
-line 87
+sharedMemoryForWorkers must be set to false to avoid domexeption
