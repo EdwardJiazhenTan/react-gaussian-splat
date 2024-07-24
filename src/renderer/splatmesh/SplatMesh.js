@@ -224,24 +224,14 @@ export class SplatMesh extends THREE.Mesh {
 
                     this.splatTree = this.baseSplatTree;
                     this.baseSplatTree = null;
-
-                    let leavesWithVertices = 0;
-                    let avgSplatCount = 0;
                     let maxSplatCount = 0;
-                    let nodeCount = 0;
 
                     this.splatTree.visitLeaves((node) => {
                         const nodeSplatCount = node.data.indexes.length;
                         if (nodeSplatCount > 0) {
-                            avgSplatCount += nodeSplatCount;
                             maxSplatCount = Math.max(maxSplatCount, nodeSplatCount);
-                            nodeCount++;
-                            leavesWithVertices++;
                         }
                     });
-                    if (this.logLevel >= LogLevel.Info) {
-                        avgSplatCount = avgSplatCount / nodeCount;
-                    }
                     resolve();
                 }
             });

@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES6",
+    "module": "commonjs",
+    "jsx": "react-jsx", // or "react" if you are using React 16.x or below
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "allowJs": true, // Add this option to allow JavaScript files
+    "outDir": "./dist" // Specify the output directory
+  },
+  "include": ["src"]
+}
