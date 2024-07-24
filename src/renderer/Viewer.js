@@ -247,7 +247,7 @@ export class Viewer {
         this.loadingSpinner = new LoadingSpinner(null, this.rootElement || document.body);
         this.loadingSpinner.hide();
         this.loadingProgressBar = new LoadingProgressBar(this.rootElement || document.body);
-        this.loadingProgressBar.hide();
+        //this.loadingProgressBar.hide();
         this.infoPanel = new InfoPanel(this.rootElement || document.body);
         this.infoPanel.hide();
 
@@ -262,7 +262,7 @@ export class Viewer {
     }
 
     createSplatMesh() {
-        this.splatMesh = new SplatMesh(this.splatRenderMode, this.dynamicScene, this.enableOptionalEffects,
+        this.splatMesh = new SplatMesh(this.dynamicScene, this.enableOptionalEffects,
                                        this.halfPrecisionCovariancesOnGPU, this.devicePixelRatio, this.gpuAcceleratedSort,
                                        this.integerBasedSort, this.antialiased, this.maxScreenSpaceSplatSize, this.logLevel,
                                        this.sphericalHarmonicsDegree);
