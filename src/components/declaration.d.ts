@@ -7,3 +7,11 @@ declare module './ViewSplat.jsx' {
 
   export default ViewSplat;
 }
+
+declare module './LoadSplat.jsx' {
+  import { FunctionComponent } from 'react';
+
+  const LoadSplat: FunctionComponent;
+
+  export default LoadSplat;
+}

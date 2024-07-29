@@ -247,7 +247,7 @@ export class Viewer {
         this.loadingSpinner = new LoadingSpinner(null, this.rootElement || document.body);
         this.loadingSpinner.hide();
         this.loadingProgressBar = new LoadingProgressBar(this.rootElement || document.body);
-        //this.loadingProgressBar.hide();
+        this.loadingProgressBar.hide();
         this.infoPanel = new InfoPanel(this.rootElement || document.body);
         this.infoPanel.hide();
 

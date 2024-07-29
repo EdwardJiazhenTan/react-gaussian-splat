@@ -1,10 +1,10 @@
 import React from 'react';
-import ViewSplat from './components/ViewSplat.jsx'; // Note the .jsx extension
+import LoadSplat from './components/LoadSplat.jsx';
 
 const App: React.FC = () => {
   return (
     <div className="App">
-      <ViewSplat />
+      <LoadSplat />
     </div>
   );
 }
