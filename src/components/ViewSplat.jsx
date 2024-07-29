@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Viewer } from '../renderer/index.js';
+import { Viewer } from '../renderers/index.js';
 
 const ViewSplat = () => {
   const [isSplatVisible, setIsSplatVisible] = useState(false);

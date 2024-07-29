@@ -484,7 +484,7 @@ export class SplatMesh extends THREE.Mesh {
 
     disposeTextures() {
         for (let textureKey in this.splatDataTextures) {
-            if (this.splatDataTextures.hasOwnProperty(textureKey)) {
+            if (Object.prototype.hasOwnProperty.call(this.splatDataTextures, textureKey)) {
                 const textureContainer = this.splatDataTextures[textureKey];
                 if (textureContainer.texture) {
                     textureContainer.texture.dispose();
@@ -1574,12 +1574,13 @@ export class SplatMesh extends THREE.Mesh {
                         const bitflags = 0;
                         const status = gl.clientWaitSync(sync, bitflags, timeout);
                         switch (status) {
-                            case gl.TIMEOUT_EXPIRED:
+                            case gl.TIMEOUT_EXPIRED: {
                                 this.computeDistancesOnGPUSyncTimeout = setTimeout(checkSync);
                                 return this.computeDistancesOnGPUSyncTimeout;
+                            }
                             case gl.WAIT_FAILED:
                                 throw new Error('should never get here');
-                            default:
+                            default: {
                                 this.computeDistancesOnGPUSyncTimeout = null;
                                 gl.deleteSync(sync);
                                 const currentVao = gl.getParameter(gl.VERTEX_ARRAY_BINDING);
@@ -1587,12 +1588,14 @@ export class SplatMesh extends THREE.Mesh {
                                 gl.bindBuffer(gl.ARRAY_BUFFER, this.distancesTransformFeedback.outDistancesBuffer);
                                 gl.getBufferSubData(gl.ARRAY_BUFFER, 0, outComputedDistances);
                                 gl.bindBuffer(gl.ARRAY_BUFFER, null);
-
+                        
                                 if (currentVao) gl.bindVertexArray(currentVao);
-
+                        
                                 // console.timeEnd("gpu_compute_distances");
-
+                        
                                 resolve();
+                                break;
+                            }
                         }
                     }
                 };

@@ -98,7 +98,7 @@ export class PlyParserUtils {
         let bytesPerVertex = 0;
         for (let fieldName of allFieldNames) {
             const fieldType = fieldTypesByName[fieldName];
-            if (fieldTypesByName.hasOwnProperty(fieldName)) {
+            if (Object.prototype.hasOwnProperty.call(fieldTypesByName, fieldName)) {
                 const fieldId = fieldNameIdMap[fieldName];
                 if (fieldId !== undefined) {
                     fieldOffsets[fieldId] = bytesPerVertex;
@@ -203,18 +203,20 @@ export class PlyParserUtils {
         let headerText = '';
         const readChunkSize = 100;
 
-        while (true) {
-            if (headerOffset + readChunkSize >= plyBuffer.byteLength) {
-                throw new Error('End of file reached while searching for end of header');
-            }
+        while (headerOffset + readChunkSize < plyBuffer.byteLength) {
             const headerChunk = new Uint8Array(plyBuffer, headerOffset, readChunkSize);
             headerText += decoder.decode(headerChunk);
             headerOffset += readChunkSize;
-
+        
             if (PlyParserUtils.checkBufferForEndHeader(plyBuffer, headerOffset, readChunkSize * 2, decoder)) {
                 break;
             }
         }
+        
+        if (headerOffset + readChunkSize >= plyBuffer.byteLength) {
+            throw new Error('End of file reached while searching for end of header');
+        }
+        
 
         return headerText;
     }
@@ -225,18 +227,20 @@ export class PlyParserUtils {
         let headerText = '';
         const readChunkSize = 100;
 
-        while (true) {
-            if (headerOffset + readChunkSize >= plyBuffer.byteLength) {
-                throw new Error('End of file reached while searching for end of header');
-            }
-            const headerChunk = new Uint8Array(plyBuffer, headerOffset, readChunkSize);
-            headerText += decoder.decode(headerChunk);
-            headerOffset += readChunkSize;
+        let headerFound = false;
 
-            if (PlyParserUtils.checkBufferForEndHeader(plyBuffer, headerOffset, readChunkSize * 2, decoder)) {
-                break;
-            }
-        }
+while (!headerFound) {
+    if (headerOffset + readChunkSize >= plyBuffer.byteLength) {
+        throw new Error('End of file reached while searching for end of header');
+    }
+    const headerChunk = new Uint8Array(plyBuffer, headerOffset, readChunkSize);
+    headerText += decoder.decode(headerChunk);
+    headerOffset += readChunkSize;
+
+    if (PlyParserUtils.checkBufferForEndHeader(plyBuffer, headerOffset, readChunkSize * 2, decoder)) {
+        headerFound = true;
+    }
+}
 
         return headerText;
     }

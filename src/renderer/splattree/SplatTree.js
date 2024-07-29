@@ -319,7 +319,7 @@ export class SplatTree {
     diposeSplatTreeWorker() {
         if (this.splatTreeWorker) this.splatTreeWorker.terminate();
         this.splatTreeWorker = null;
-    };
+    }
 
     /**
      * Construct this instance of SplatTree from an instance of SplatMesh.

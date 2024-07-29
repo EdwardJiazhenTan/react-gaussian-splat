@@ -31,7 +31,7 @@ export class AbortablePromise {
         });
     }
 
-    then(onResolve, onReject) {
+    then(onResolve) {
         return new AbortablePromise((resolve, reject) => {
             this.promise
                 .then(onResolve)

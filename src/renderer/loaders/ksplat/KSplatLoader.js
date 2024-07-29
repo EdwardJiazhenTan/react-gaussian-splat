@@ -18,7 +18,7 @@ export class KSplatLoader {
             throw new Error(`KSplat version not supported: v${header.versionMajor}.${header.versionMinor}. ` +
                             `Minimum required: v${minVersionMajor}.${minVersionMinor}`);
         }
-    };
+    }
 
     static loadFromURL(fileName, externalOnProgress, progressiveLoad, onSectionBuilt) {
         let progressiveLoadBuffer;

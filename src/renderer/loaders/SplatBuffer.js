@@ -1190,7 +1190,7 @@ export class SplatBuffer {
 
         const partiallyFullBucketArray = [];
         for (let bucketId in partiallyFullBuckets) {
-            if (partiallyFullBuckets.hasOwnProperty(bucketId)) {
+            if (Object.prototype.hasOwnProperty.call(partiallyFullBuckets, bucketId)) { 
                 const bucket = partiallyFullBuckets[bucketId];
                 if (bucket) {
                     partiallyFullBucketArray.push(bucket);

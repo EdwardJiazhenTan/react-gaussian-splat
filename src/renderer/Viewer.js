@@ -247,7 +247,7 @@ export class Viewer {
         this.loadingSpinner = new LoadingSpinner(null, this.rootElement || document.body);
         this.loadingSpinner.hide();
         this.loadingProgressBar = new LoadingProgressBar(this.rootElement || document.body);
-        this.loadingProgressBar.hide();
+        //this.loadingProgressBar.hide();
         this.infoPanel = new InfoPanel(this.rootElement || document.body);
         this.infoPanel.hide();
 
@@ -352,12 +352,7 @@ export class Viewer {
             } else if (this.webXRMode === WebXRMode.AR) {
                 this.rootElement.appendChild(ARButton.createButton(this.renderer));
             }
-            this.renderer.xr.addEventListener('sessionstart', (e) => {
-                this.webXRActive = true;
-            });
-            this.renderer.xr.addEventListener('sessionend', (e) => {
-                this.webXRActive = false;
-            });
+            
             this.renderer.xr.enabled = true;
             this.camera.position.copy(this.initialCameraPosition);
             this.camera.up.copy(this.cameraUp).normalize();
@@ -1414,7 +1409,7 @@ export class Viewer {
         let waitPromises = [];
         let promisesToAbort = [];
         for (let promiseKey in this.splatSceneDownloadPromises) {
-            if (this.splatSceneDownloadPromises.hasOwnProperty(promiseKey)) {
+            if (Object.prototype.hasOwnProperty.call(this.splatSceneDownloadPromises, promiseKey)) {
                 const downloadPromiseToAbort = this.splatSceneDownloadPromises[promiseKey];
                 promisesToAbort.push(downloadPromiseToAbort);
                 waitPromises.push(downloadPromiseToAbort.promise);
