@@ -1,7 +1,3 @@
-import SorterWasm from './sorter.wasm?init';
-import SorterWasmNoSIMD from './sorter_no_simd.wasm?init';
-import SorterWasmNonShared from './sorter_non_shared.wasm?init';
-import SorterWasmNoSIMDNonShared from './sorter_no_simd_non_shared.wasm?init';
 import { isIOS, getIOSSemever } from '../Util.js';
 import { Constants } from '../Constants.js';
 
@@ -199,7 +195,6 @@ function sortWorker(self) {
         }
     };
 }
-
 export function createSortWorker(splatCount, useSharedMemory, enableSIMDInSort, integerBasedSort, dynamicMode) {
     const worker = new Worker(
         URL.createObjectURL(
@@ -209,45 +204,56 @@ export function createSortWorker(splatCount, useSharedMemory, enableSIMDInSort, 
         ),
     );
 
-    let sourceWasm = SorterWasm;
+    // Adjust the path to access WASM files from the public directory
+    let sourceWasm = '/worker/sorter.wasm'; // Default path
 
-    // iOS makes choosing the right WebAssembly configuration tricky :(
     let iOSSemVer = isIOS() ? getIOSSemever() : null;
     if (!enableSIMDInSort && !useSharedMemory) {
-        sourceWasm = SorterWasmNoSIMD;
+        sourceWasm = '/worker/sorter_no_simd.wasm';
         if (iOSSemVer && iOSSemVer.major < 16) {
-            sourceWasm = SorterWasmNoSIMDNonShared;
+            sourceWasm = '/worker/sorter_no_simd_non_shared.wasm';
         }
     } else if (!enableSIMDInSort) {
-        sourceWasm = SorterWasmNoSIMD;
+        sourceWasm = '/worker/sorter_no_simd.wasm';
     } else if (!useSharedMemory) {
         if (iOSSemVer && iOSSemVer.major < 16) {
-            sourceWasm = SorterWasmNonShared;
+            sourceWasm = '/worker/sorter_non_shared.wasm';
         }
     }
 
+    console.log("Fetching WASM from:", sourceWasm);
+
     // Fetch and convert the WASM file to Base64
-    fetch(sourceWasm).then(response => response.arrayBuffer())
-    .then(wasmArrayBuffer => {
-        worker.postMessage({
-            'init': {
-                'sorterWasmBytes': wasmArrayBuffer,
-                'splatCount': splatCount,
-                'useSharedMemory': useSharedMemory,
-                'integerBasedSort': integerBasedSort,
-                'dynamicMode': dynamicMode,
-                'Constants': {
-                    'BytesPerFloat': Constants.BytesPerFloat,
-                    'BytesPerInt': Constants.BytesPerInt,
-                    'DepthMapRange': Constants.DepthMapRange,
-                    'MemoryPageSize': Constants.MemoryPageSize,
-                    'MaxScenes': Constants.MaxScene
-                }
+    fetch(sourceWasm)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`Network response was not ok: ${response.statusText}`);
             }
+            return response.arrayBuffer();
+        })
+        .then(wasmArrayBuffer => {
+            console.log("WASM ArrayBuffer received:", wasmArrayBuffer);
+
+            worker.postMessage({
+                'init': {
+                    'sorterWasmBytes': wasmArrayBuffer,
+                    'splatCount': splatCount,
+                    'useSharedMemory': useSharedMemory,
+                    'integerBasedSort': integerBasedSort,
+                    'dynamicMode': dynamicMode,
+                    'Constants': {
+                        'BytesPerFloat': Constants.BytesPerFloat,
+                        'BytesPerInt': Constants.BytesPerInt,
+                        'DepthMapRange': Constants.DepthMapRange,
+                        'MemoryPageSize': Constants.MemoryPageSize,
+                        'MaxScenes': Constants.MaxScenes
+                    }
+                }
+            });
+        })
+        .catch(error => {
+            console.error('Error fetching WASM file:', error);
         });
-    }).catch(error => {
-        console.error('Error fetching WASM file:', error);
-    });
 
     return worker;
 }

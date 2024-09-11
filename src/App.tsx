@@ -1,7 +1,7 @@
 import React from 'react';
 import LoadSplat from './components/LoadSplat.jsx';
 
-const App: React.FC = () => {
+const Root: React.FC = () => {
   return (
     <div className="App">
       <LoadSplat />
@@ -9,4 +9,4 @@ const App: React.FC = () => {
   );
 }
 
-export default App;
+export default Root;
